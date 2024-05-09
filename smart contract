@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.25;
+
+contract ChainOfCustody {
+    struct Evidence {
+        bytes32 id;
+        address owner;
+        address creator;
+        string description;
+        address[] transferAddresses;
+        uint256[] transferTimes;
+    }
+
+    struct TransferRequest {
+        address requestedNewOwner;
+        uint256 approvalCount;
+        mapping(address => bool) approvals;
+    }
+
+    mapping(bytes32 => Evidence) private evidences;
+    mapping(bytes32 => bool) private evidenceExists;
+    mapping(bytes32 => TransferRequest) private transferRequests;
+    mapping(address => bool) private isValidator;
+
+    address private owner;
+    event EvidenceCreated(bytes32 indexed id, address creator, string description);
+    event EvidenceTransferred(bytes32 indexed id, address from, address to);
+    event EvidenceRemoved(bytes32 indexed id);
+    event TransferRequested(bytes32 indexed id, address requestedNewOwner);
+    event TransferApproved(bytes32 indexed id, address validator);
+    event ValidatorAdded(address validator);
+    event ValidatorRemoved(address validator);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Caller is not the owner");
+        _;
+    }
+
+    modifier onlyValidator() {
+        require(isValidator[msg.sender], "Caller is not a validator");
+        _;
+    }
+
+    modifier onlyEvidenceOwner(bytes32 id) {
+        require(msg.sender == evidences[id].owner, "Caller is not the evidence owner");
+        _;
+    }
+
+    modifier evidenceExistence(bytes32 id, bool mustExist) {
+        require(evidenceExists[id] == mustExist, "Evidence existence mismatch");
+        _;
+    }
+
+    constructor(address[] memory validators) {
+        owner = msg.sender;
+        for (uint i = 0; i < validators.length; i++) {
+            isValidator[validators[i]] = true;
+            emit ValidatorAdded(validators[i]);
+        }
+    }
+
+    function addValidator(address validator) public onlyOwner {
+        isValidator[validator] = true;
+        emit ValidatorAdded(validator);
+    }
+
+    function removeValidator(address validator) public onlyOwner {
+        isValidator[validator] = false;
+        emit ValidatorRemoved(validator);
+    }
+
+    function createEvidence(bytes32 id, string memory description) public evidenceExistence(id, false) {
+        Evidence storage evidence = evidences[id];
+        evidence.id = id;
+        evidence.owner = msg.sender;
+        evidence.creator = msg.sender;
+        evidence.description = description;
+        evidence.transferAddresses.push(msg.sender);
+        evidence.transferTimes.push(block.timestamp);
+        evidenceExists[id] = true;
+
+        emit EvidenceCreated(id, msg.sender, description);
+    }
+
+    function requestTransfer(bytes32 id, address newOwner) public onlyEvidenceOwner(id) evidenceExistence(id, true) {
+        require(newOwner != address(0), "New owner cannot be the zero address");
+        transferRequests[id].requestedNewOwner = newOwner;
+        emit TransferRequested(id, newOwner);
+    }
+
+    function approveTransfer(bytes32 id) public onlyValidator {
+        require(transferRequests[id].requestedNewOwner != address(0), "Transfer not requested");
+        require(!transferRequests[id].approvals[msg.sender], "Already approved by caller");
+
+        transferRequests[id].approvals[msg.sender] = true;
+        transferRequests[id].approvalCount++;
+
+        emit TransferApproved(id, msg.sender);
+
+        if (transferRequests[id].approvalCount >= 2) {
+            completeTransfer(id, transferRequests[id].requestedNewOwner);
+            delete transferRequests[id]; // Cleanup after completion
+        }
+    }
+
+    function completeTransfer(bytes32 id, address newOwner) private {
+        emit EvidenceTransferred(id, evidences[id].owner, newOwner);
+        evidences[id].owner = newOwner;
+        evidences[id].transferAddresses.push(newOwner);
+        evidences[id].transferTimes.push(block.timestamp);
+    }
+
+    function removeEvidence(bytes32 id) public onlyEvidenceOwner(id) evidenceExistence(id, true) {
+        delete evidences[id];
+        delete evidenceExists[id];
+
+        emit EvidenceRemoved(id);
+    }
+
+    function getEvidence(bytes32 id) public view returns (bytes32, address, address, string memory, address[] memory, uint256[] memory) {
+        require(evidenceExists[id], "Evidence does not exist");
+        Evidence storage evidence = evidences[id];
+        return (
+            evidence.id,
+            evidence.owner,
+            evidence.creator,
+            evidence.description,
+            evidence.transferAddresses,
+            evidence.transferTimes
+        );
+    }
+}
+
